@@ -1,0 +1,1251 @@
+(() => {
+    "use strict";
+
+    /* =========================================================
+       🦜 BIRB FINAL v7
+       WITH VISIBLE ON / OFF BUTTON
+       ========================================================= */
+
+
+    /* =========================================================
+       STOP PREVIOUS INSTANCE
+       ========================================================= */
+
+    try {
+        window.__birbBot?.stop?.();
+    } catch (_) {}
+
+
+    /* =========================================================
+       CONFIG
+       ========================================================= */
+
+    const SEND_TEXT =
+        "بــــــــــرر(عن اذنكم شوي ولا أحد يروح )رررــــب";
+
+    const REQUIRED_MESSAGES = 3;
+
+    const REPEAT_COUNT = 4;
+
+    const SEND_DELAY = 0;
+
+    const DUPLICATE_WINDOW = 1200;
+
+
+    /* =========================================================
+       STATE
+       ========================================================= */
+
+    let observer = null;
+
+    let enabled = true;
+
+    let phase = "NONE";
+
+    let owner = "";
+
+    let round = 0;
+
+    let ownerMessages = [];
+
+    const duplicateTracker = new Map();
+
+
+    /* =========================================================
+       REMOVE OLD BUTTON
+       ========================================================= */
+
+    document
+        .getElementById(
+            "__birbControl"
+        )
+        ?.remove();
+
+
+    /* =========================================================
+       NORMALIZE
+       ========================================================= */
+
+    function normalizeBIRB(text) {
+
+        return String(text || "")
+            .replace(/\[image\]/gi, "")
+            .replace(/ـ/g, "")
+            .replace(/[\u064B-\u065F\u0670]/g, "")
+            .replace(/[إأآٱ]/g, "ا")
+            .replace(/ؤ/g, "و")
+            .replace(/ئ/g, "ي")
+            .replace(/\s+/g, "")
+            .trim()
+            .toLowerCase()
+            .replace(/(.)\1+/g, "$1");
+    }
+
+
+    /* =========================================================
+       QUESTION DETECTOR
+       ========================================================= */
+
+    function isQuestion(text) {
+
+        const n =
+            normalizeBIRB(text);
+
+        console.log(
+            "[BIRB] 🔍 QUESTION CHECK:",
+            text,
+            "→",
+            n
+        );
+
+        if (!n)
+            return false;
+
+        if (n.includes("سوال"))
+            return true;
+
+        if (n.includes("عواصم"))
+            return true;
+
+        if (n.includes("مدن"))
+            return true;
+
+        return false;
+    }
+
+
+    /* =========================================================
+       MESSAGE DATA
+       ========================================================= */
+
+    function getMessageData(row) {
+
+        if (!row)
+            return null;
+
+        const user =
+            row.querySelector(
+                ".u-topic"
+            )
+            ?.textContent
+            ?.trim() || "";
+
+        const msg =
+            row.querySelector(
+                ".u-msg"
+            )
+            ?.textContent
+            ?.trim() || "";
+
+        const time =
+            row.querySelector(
+                ".tago, .minix.tago"
+            )
+            ?.textContent
+            ?.trim() || "";
+
+        if (!user || !msg)
+            return null;
+
+        return {
+            user,
+            msg,
+            time
+        };
+    }
+
+
+    /* =========================================================
+       DUPLICATE FINGERPRINT
+       ========================================================= */
+
+    function fingerprint(data) {
+
+        return [
+            data.user,
+            data.msg,
+            data.time
+        ].join("|||");
+    }
+
+
+    /* =========================================================
+       SMART DUPLICATE PROTECTION
+       ========================================================= */
+
+    function isDuplicate(data) {
+
+        const key =
+            fingerprint(data);
+
+        const now =
+            Date.now();
+
+        let item =
+            duplicateTracker.get(key);
+
+
+        if (!item) {
+
+            duplicateTracker.set(
+                key,
+                {
+                    count: 1,
+                    last: now
+                }
+            );
+
+            return false;
+        }
+
+
+        if (
+            now - item.last >
+            DUPLICATE_WINDOW
+        ) {
+
+            item.count = 1;
+            item.last = now;
+
+            return false;
+        }
+
+
+        item.count++;
+        item.last = now;
+
+
+        /*
+         * Desktop/Mobile duplicate:
+         *
+         * 1st = real
+         * 2nd = duplicate
+         * 3rd = another real identical message
+         * 4th = duplicate
+         */
+
+        if (
+            item.count % 2 === 0
+        ) {
+
+            console.log(
+                "[BIRB] ♻️ DOM DUPLICATE IGNORED:",
+                data.msg
+            );
+
+            return true;
+        }
+
+
+        return false;
+    }
+
+
+    /* =========================================================
+       CLEAN DUPLICATES
+       ========================================================= */
+
+    function cleanupDuplicates() {
+
+        const now =
+            Date.now();
+
+        for (
+            const [key, item]
+            of duplicateTracker
+        ) {
+
+            if (
+                now - item.last >
+                DUPLICATE_WINDOW * 3
+            ) {
+
+                duplicateTracker.delete(
+                    key
+                );
+            }
+        }
+    }
+
+
+    /* =========================================================
+       SEND MESSAGE
+       ========================================================= */
+
+    function sendMessage(text) {
+
+        if (!enabled) {
+
+            console.log(
+                "[BIRB] 🔴 OFF - SEND BLOCKED"
+            );
+
+            return false;
+        }
+
+
+        const tbox =
+            document.querySelector(
+                "#tbox"
+            );
+
+
+        if (!tbox) {
+
+            console.error(
+                "[BIRB] ❌ #tbox NOT FOUND"
+            );
+
+            return false;
+        }
+
+
+        try {
+
+            const events =
+                window.jQuery?._data(
+                    tbox,
+                    "events"
+                );
+
+
+            const handler =
+                events?.keyup
+                    ?.find(
+                        h => h.guid === 7
+                    )
+                    ?.handler;
+
+
+            if (!handler) {
+
+                console.error(
+                    "[BIRB] ❌ SEND HANDLER NOT FOUND"
+                );
+
+                return false;
+            }
+
+
+            const setter =
+                Object.getOwnPropertyDescriptor(
+                    HTMLTextAreaElement.prototype,
+                    "value"
+                )?.set;
+
+
+            if (!setter) {
+
+                console.error(
+                    "[BIRB] ❌ TEXTAREA SETTER NOT FOUND"
+                );
+
+                return false;
+            }
+
+
+            setter.call(
+                tbox,
+                text
+            );
+
+
+            tbox.dispatchEvent(
+                new Event(
+                    "input",
+                    {
+                        bubbles: true
+                    }
+                )
+            );
+
+
+            const e =
+                window.jQuery.Event(
+                    "keyup"
+                );
+
+
+            e.key = "Enter";
+            e.code = "Enter";
+            e.keyCode = 13;
+            e.which = 13;
+
+            e.target = tbox;
+            e.currentTarget = tbox;
+
+
+            handler.call(
+                tbox,
+                e
+            );
+
+
+            return true;
+
+        } catch (err) {
+
+            console.error(
+                "[BIRB] ❌ SEND ERROR:",
+                err
+            );
+
+            return false;
+        }
+    }
+
+
+    /* =========================================================
+       SEND ×4
+       ========================================================= */
+
+    function sendRepeated() {
+
+        if (!enabled) {
+
+            console.log(
+                "[BIRB] 🔴 OFF - ROUND BLOCKED"
+            );
+
+            return;
+        }
+
+
+        phase =
+            "ANSWERED";
+
+
+        console.log(
+            "[BIRB] 🎯 REQUIRED INPUT REACHED"
+        );
+
+
+        console.log(
+            "[BIRB] 📝 OWNER INPUT:",
+            ownerMessages.join(
+                " | "
+            )
+        );
+
+
+        console.log(
+            "[BIRB] 🔥 SENDING:",
+            REPEAT_COUNT,
+            "TIMES"
+        );
+
+
+        let successful =
+            0;
+
+
+        for (
+            let i = 1;
+            i <= REPEAT_COUNT;
+            i++
+        ) {
+
+            if (!enabled) {
+
+                console.log(
+                    "[BIRB] 🔴 OFF DURING SEND"
+                );
+
+                break;
+            }
+
+
+            const sent =
+                sendMessage(
+                    SEND_TEXT
+                );
+
+
+            if (sent) {
+
+                successful++;
+
+                console.log(
+                    `[BIRB] 📤 SEND ${i}/${REPEAT_COUNT}`
+                );
+
+            } else {
+
+                console.log(
+                    `[BIRB] ❌ SEND ${i}/${REPEAT_COUNT} FAILED`
+                );
+            }
+        }
+
+
+        console.log(
+            `[BIRB] ✅ ROUND ${round} COMPLETE — ${successful}/${REPEAT_COUNT}`
+        );
+    }
+
+
+    /* =========================================================
+       NEW ROUND
+       ========================================================= */
+
+    function startNewRound(data) {
+
+        if (!enabled)
+            return;
+
+
+        round++;
+
+        phase =
+            "WAITING";
+
+        owner =
+            data.user;
+
+        ownerMessages = [];
+
+
+        console.log(
+            `[BIRB] 🦜 NEW ROUND: ${round}`
+        );
+
+
+        console.log(
+            "[BIRB] 👤 OWNER:",
+            owner
+        );
+
+
+        console.log(
+            "[BIRB] ❓ QUESTION:",
+            data.msg
+        );
+
+
+        console.log(
+            `[BIRB] ⏳ WAITING ${REQUIRED_MESSAGES} OWNER MESSAGES`
+        );
+    }
+
+
+    /* =========================================================
+       PROCESS MESSAGE
+       ========================================================= */
+
+    function processMessage(row) {
+
+        if (!enabled)
+            return;
+
+
+        const data =
+            getMessageData(row);
+
+
+        if (!data)
+            return;
+
+
+        /*
+         * Ignore our own response
+         */
+        if (
+            data.msg ===
+            SEND_TEXT
+        ) {
+
+            console.log(
+                "[BIRB] 🤖 OWN MESSAGE IGNORED"
+            );
+
+            return;
+        }
+
+
+        /*
+         * Duplicate protection
+         */
+        if (
+            isDuplicate(data)
+        ) {
+
+            return;
+        }
+
+
+        console.log(
+            "[BIRB] 📥 NEW MESSAGE:",
+            data.user,
+            "→",
+            data.msg
+        );
+
+
+        /* =====================================================
+           QUESTION
+           ===================================================== */
+
+        if (
+            isQuestion(
+                data.msg
+            )
+        ) {
+
+            startNewRound(
+                data
+            );
+
+            return;
+        }
+
+
+        /* =====================================================
+           NO ACTIVE ROUND
+           ===================================================== */
+
+        if (
+            phase !==
+            "WAITING"
+        ) {
+
+            console.log(
+                "[BIRB] ⏭️ NO ACTIVE ROUND:",
+                data.msg
+            );
+
+            return;
+        }
+
+
+        /* =====================================================
+           OTHER USER
+           ===================================================== */
+
+        if (
+            data.user !==
+            owner
+        ) {
+
+            console.log(
+                "[BIRB] ⛔ OTHER USER IGNORED:",
+                data.user,
+                "→",
+                data.msg
+            );
+
+            return;
+        }
+
+
+        /* =====================================================
+           OWNER MESSAGE
+           ===================================================== */
+
+        ownerMessages.push(
+            data.msg
+        );
+
+
+        const count =
+            ownerMessages.length;
+
+
+        console.log(
+            `[BIRB] 👤 OWNER INPUT #${count}:`,
+            data.msg
+        );
+
+
+        if (
+            count <
+            REQUIRED_MESSAGES
+        ) {
+
+            console.log(
+                `[BIRB] ⏳ COLLECTING ${count}/${REQUIRED_MESSAGES}`
+            );
+
+            return;
+        }
+
+
+        /* =====================================================
+           3RD MESSAGE
+           ===================================================== */
+
+        sendRepeated();
+    }
+
+
+    /* =========================================================
+       PROCESS NODE
+       ========================================================= */
+
+    function processAddedNode(node) {
+
+        if (!node)
+            return;
+
+
+        if (
+            node.nodeType !==
+            Node.ELEMENT_NODE
+        ) {
+
+            return;
+        }
+
+
+        if (
+            node.matches?.(
+                ".uzr"
+            )
+        ) {
+
+            processMessage(
+                node
+            );
+        }
+
+
+        const rows =
+            node.querySelectorAll?.(
+                ".uzr"
+            );
+
+
+        if (
+            rows?.length
+        ) {
+
+            rows.forEach(
+                processMessage
+            );
+        }
+    }
+
+
+    /* =========================================================
+       OBSERVER
+       ========================================================= */
+
+    const d2 =
+        document.querySelector(
+            "#d2"
+        );
+
+
+    if (!d2) {
+
+        console.error(
+            "[BIRB] ❌ #d2 NOT FOUND"
+        );
+
+        return;
+    }
+
+
+    observer =
+        new MutationObserver(
+            mutations => {
+
+                if (!enabled)
+                    return;
+
+
+                for (
+                    const mutation
+                    of mutations
+                ) {
+
+                    if (
+                        mutation.type !==
+                        "childList"
+                    ) {
+
+                        continue;
+                    }
+
+
+                    for (
+                        const node
+                        of mutation.addedNodes
+                    ) {
+
+                        processAddedNode(
+                            node
+                        );
+                    }
+                }
+
+
+                cleanupDuplicates();
+            }
+        );
+
+
+    observer.observe(
+        d2,
+        {
+            childList: true,
+            subtree: true
+        }
+    );
+
+
+    /* =========================================================
+       BUTTON
+       ========================================================= */
+
+    const button =
+        document.createElement(
+            "button"
+        );
+
+
+    button.id =
+        "__birbControl";
+
+
+    button.type =
+        "button";
+
+
+    button.style.cssText = `
+        position: fixed;
+        right: 20px;
+        bottom: 20px;
+        z-index: 2147483647;
+
+        border: none;
+        outline: none;
+
+        padding: 10px 16px;
+
+        border-radius: 12px;
+
+        font-family:
+            Arial,
+            sans-serif;
+
+        font-size: 14px;
+        font-weight: 700;
+
+        cursor: pointer;
+
+        color: #fff;
+
+        box-shadow:
+            0 5px 20px rgba(0,0,0,.35);
+
+        transition:
+            transform .12s ease,
+            opacity .12s ease;
+    `;
+
+
+    /* =========================================================
+       UPDATE BUTTON
+       ========================================================= */
+
+    function updateButton() {
+
+        if (enabled) {
+
+            button.textContent =
+                "🦜 BIRB  🟢 ON";
+
+            button.style.background =
+                "#16803c";
+
+        } else {
+
+            button.textContent =
+                "🦜 BIRB  🔴 OFF";
+
+            button.style.background =
+                "#a32626";
+        }
+    }
+
+
+    /* =========================================================
+       BUTTON HOVER
+       ========================================================= */
+
+    button.addEventListener(
+        "mouseenter",
+        () => {
+
+            button.style.transform =
+                "scale(1.05)";
+
+            button.style.opacity =
+                "0.92";
+        }
+    );
+
+
+    button.addEventListener(
+        "mouseleave",
+        () => {
+
+            button.style.transform =
+                "scale(1)";
+
+            button.style.opacity =
+                "1";
+        }
+    );
+
+
+    /* =========================================================
+       BUTTON CLICK
+       ========================================================= */
+
+    button.addEventListener(
+        "click",
+        () => {
+
+            enabled =
+                !enabled;
+
+
+            if (!enabled) {
+
+                /*
+                 * Cancel current round
+                 */
+                phase =
+                    "NONE";
+
+                owner =
+                    "";
+
+                ownerMessages = [];
+
+
+                console.log(
+                    "[BIRB] 🔴 OFF"
+                );
+
+            } else {
+
+                /*
+                 * Start fresh after ON
+                 */
+                phase =
+                    "NONE";
+
+                owner =
+                    "";
+
+                ownerMessages = [];
+
+
+                console.log(
+                    "[BIRB] 🟢 ON"
+                );
+            }
+
+
+            updateButton();
+        }
+    );
+
+
+    document.body.appendChild(
+        button
+    );
+
+
+    updateButton();
+
+
+    /* =========================================================
+       STOP
+       ========================================================= */
+
+    function stop() {
+
+        try {
+
+            observer?.disconnect();
+
+        } catch (_) {}
+
+
+        observer = null;
+
+
+        enabled =
+            false;
+
+
+        phase =
+            "NONE";
+
+
+        owner =
+            "";
+
+
+        ownerMessages = [];
+
+
+        duplicateTracker.clear();
+
+
+        button.remove();
+
+
+        console.log(
+            "[BIRB] 🛑 BIRB STOPPED"
+        );
+    }
+
+
+    /* =========================================================
+       ON
+       ========================================================= */
+
+    function on() {
+
+        enabled =
+            true;
+
+
+        phase =
+            "NONE";
+
+
+        owner =
+            "";
+
+
+        ownerMessages = [];
+
+
+        updateButton();
+
+
+        console.log(
+            "[BIRB] 🟢 ON"
+        );
+    }
+
+
+    /* =========================================================
+       OFF
+       ========================================================= */
+
+    function off() {
+
+        enabled =
+            false;
+
+
+        phase =
+            "NONE";
+
+
+        owner =
+            "";
+
+
+        ownerMessages = [];
+
+
+        updateButton();
+
+
+        console.log(
+            "[BIRB] 🔴 OFF"
+        );
+    }
+
+
+    /* =========================================================
+       RESET
+       ========================================================= */
+
+    function reset() {
+
+        phase =
+            "NONE";
+
+
+        owner =
+            "";
+
+
+        ownerMessages = [];
+
+
+        console.log(
+            "[BIRB] 🔄 STATE RESET"
+        );
+    }
+
+
+    /* =========================================================
+       STATUS
+       ========================================================= */
+
+    function status() {
+
+        console.log(
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        );
+
+
+        console.log(
+            "🦜 BIRB STATUS"
+        );
+
+
+        console.log(
+            "Enabled:",
+            enabled
+        );
+
+
+        console.log(
+            "Phase:",
+            phase
+        );
+
+
+        console.log(
+            "Round:",
+            round
+        );
+
+
+        console.log(
+            "Owner:",
+            owner ||
+            "(none)"
+        );
+
+
+        console.log(
+            "Collected:",
+            ownerMessages
+        );
+
+
+        console.log(
+            "Count:",
+            ownerMessages.length
+        );
+
+
+        console.log(
+            "Required:",
+            REQUIRED_MESSAGES
+        );
+
+
+        console.log(
+            "Repeat:",
+            REPEAT_COUNT
+        );
+
+
+        console.log(
+            "Send delay:",
+            SEND_DELAY + "ms"
+        );
+
+
+        console.log(
+            "Observer:",
+            observer
+                ? "RUNNING"
+                : "STOPPED"
+        );
+
+
+        console.log(
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        );
+    }
+
+
+    /* =========================================================
+       GLOBAL API
+       ========================================================= */
+
+    window.__birbBot = {
+
+        on,
+
+        off,
+
+        stop,
+
+        reset,
+
+        status,
+
+        normalize:
+            normalizeBIRB,
+
+        isQuestion,
+
+        getState: () => ({
+
+            enabled,
+
+            phase,
+
+            owner,
+
+            round,
+
+            ownerMessages: [
+                ...ownerMessages
+            ]
+
+        })
+    };
+
+
+    /* =========================================================
+       READY
+       ========================================================= */
+
+    console.log(
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    );
+
+    console.log(
+        "🦜 BIRB FINAL v7 READY"
+    );
+
+    console.log(
+        "🎛️ Visible ON/OFF button: ON"
+    );
+
+    console.log(
+        `🔢 Required messages: ${REQUIRED_MESSAGES}`
+    );
+
+    console.log(
+        `🔥 Repeat count: ${REPEAT_COUNT}`
+    );
+
+    console.log(
+        "⚡ Send delay: 0ms"
+    );
+
+    console.log(
+        "🔤 Same-letter messages: SUPPORTED"
+    );
+
+    console.log(
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    );
+
+})();

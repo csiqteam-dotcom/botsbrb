@@ -1,0 +1,1133 @@
+(() => {
+    "use strict";
+
+    // =========================================================
+    // 🧹 STOP OLD VERSION
+    // =========================================================
+    try {
+        window.__chatBreaker?.stop?.();
+    } catch {}
+
+    document
+        .getElementById("chat-breaker-toggle")
+        ?.remove();
+
+    const input = document.querySelector("#tbox");
+
+    if (!input) {
+        console.error("❌ #tbox not found");
+        return;
+    }
+
+    // =========================================================
+    // ⚙️ SETTINGS
+    // =========================================================
+    const ROUND_TIMEOUT = 15000;
+    const QUESTION_COOLDOWN = 1200;
+
+    let enabled = true;
+    let state = "READY";
+
+    let currentRound = null;
+    let timer = null;
+    let observer = null;
+
+    const knownNodes = new WeakMap();
+    const recentQuestions = new Map();
+
+    // =========================================================
+    // 🔘 BUTTON
+    // =========================================================
+    const button = document.createElement("button");
+
+    button.id = "chat-breaker-toggle";
+    button.textContent = "⚡ ON";
+
+    Object.assign(button.style, {
+        position: "fixed",
+        right: "20px",
+        bottom: "20px",
+        zIndex: "2147483647",
+        padding: "9px 16px",
+        border: "0",
+        borderRadius: "10px",
+        background: "#16a34a",
+        color: "#fff",
+        fontSize: "14px",
+        fontWeight: "bold",
+        cursor: "pointer",
+        boxShadow: "0 5px 20px rgba(0,0,0,.35)",
+        fontFamily: "Arial,sans-serif"
+    });
+
+    document.body.appendChild(button);
+
+    // =========================================================
+    // 🧹 BASIC CLEAN
+    // =========================================================
+    function clean(value) {
+        return String(value || "")
+            .normalize("NFC")
+
+            // Zero width characters
+            .replace(
+                /[\u200B-\u200D\uFEFF\u200E\u200F]/g,
+                ""
+            )
+
+            // NBSP
+            .replace(/\u00A0/g, " ")
+
+            // New lines
+            .replace(/\r?\n/g, " ")
+
+            // [image]
+            .replace(
+                /\[\s*image\s*\]/gi,
+                " "
+            )
+
+            // <image>
+            .replace(
+                /<\s*image\s*>/gi,
+                " "
+            )
+
+            // IMAGE
+            .replace(
+                /\bimage\b/gi,
+                " "
+            )
+
+            // ف179 / ف123 / ف1
+            .replace(
+                /ف\d+/gu,
+                " "
+            )
+
+            .replace(/\s+/g, " ")
+            .trim();
+    }
+
+    // =========================================================
+    // 🧠 NORMALIZE ARABIC FOR QUESTION DETECTION
+    // =========================================================
+    function normalizeQuestion(text) {
+        let value = clean(text);
+
+        // إزالة الحركات العربية
+        value = value.replace(
+            /[\u0610-\u061A\u064B-\u065F\u0670\u06D6-\u06ED]/gu,
+            ""
+        );
+
+        // إزالة التطويل
+        value = value.replace(
+            /ـ/gu,
+            ""
+        );
+
+        // إزالة علامات الترقيم
+        value = value.replace(
+            /[\[\](){}<>*_~`|:؛،,.!?؟"'«»]/g,
+            " "
+        );
+
+        // توحيد بعض أشكال الألف
+        value = value
+            .replace(/[أإآٱ]/gu, "ا");
+
+        // توحيد الياء
+        value = value
+            .replace(/ى/gu, "ي");
+
+        // توحيد المسافات
+        value = value
+            .replace(/\s+/g, " ")
+            .trim();
+
+        return value;
+    }
+
+    // =========================================================
+    // 🔥 COLLAPSE REPEATED CHARACTERS
+    // =========================================================
+    function collapseRepeatedArabic(text) {
+        return text.replace(
+            /([\u0600-\u06FF])\1+/gu,
+            "$1"
+        );
+    }
+
+    // =========================================================
+    // ❓ SMART QUESTION DETECTOR
+    // =========================================================
+    function isQuestion(text) {
+        const normalized =
+            normalizeQuestion(text);
+
+        if (!normalized) {
+            return false;
+        }
+
+        console.log(
+            "🔍 QUESTION CHECK:",
+            text
+        );
+
+        console.log(
+            "🧹 NORMALIZED:",
+            normalized
+        );
+
+        // -----------------------------------------------------
+        // الحالة الطبيعية
+        // -----------------------------------------------------
+        if (
+            normalized.includes("سؤال")
+        ) {
+            return true;
+        }
+
+        if (
+            normalized.includes("تفكيك")
+        ) {
+            return true;
+        }
+
+        // -----------------------------------------------------
+        // بعد إزالة تكرار الحروف
+        // -----------------------------------------------------
+        const collapsed =
+            collapseRepeatedArabic(
+                normalized
+            );
+
+        if (
+            collapsed.includes("سؤال")
+        ) {
+            return true;
+        }
+
+        if (
+            collapsed.includes("تفكيك")
+        ) {
+            return true;
+        }
+
+        // -----------------------------------------------------
+        // 🔥 كشف السؤال المشوّه جداً
+        //
+        // مثال:
+        //
+        // سـَـَـَـَـَـَـَؤؤؤؤؤؤؤإأإأإل
+        //
+        // بعد التنظيف قد يصير:
+        //
+        // سؤإأإل
+        //
+        // لذلك نستخدم نمط:
+        //
+        // س + و/ؤ + تكرارات + أ/إ + تكرارات + ل
+        // -----------------------------------------------------
+        const compact =
+            normalized
+                .replace(/\s+/g, "");
+
+        /*
+         * نمط كلمة سؤال المشوهة:
+         *
+         * س
+         * ثم و أو ؤ
+         * ثم أ/إ/ا
+         * ثم ل
+         *
+         * مع السماح بتكرار الحروف.
+         */
+        const distortedQuestion =
+            /^.*س[وؤ]+[ااأإآٱ]*[ل]+.*$/u;
+
+        if (
+            distortedQuestion.test(
+                compact
+            )
+        ) {
+            return true;
+        }
+
+        /*
+         * نسخة أكثر مرونة:
+         *
+         * س
+         * أي عدد من و/ؤ
+         * أي عدد من أ/إ/آ
+         * ل
+         */
+        const veryLooseQuestion =
+            /س[وؤ]{1,}[اأإآٱ]{1,}ل/u;
+
+        if (
+            veryLooseQuestion.test(
+                compact
+            )
+        ) {
+            return true;
+        }
+
+        return false;
+    }
+
+    // =========================================================
+    // 📦 GET MESSAGE INFO
+    // =========================================================
+    function getInfo(el) {
+        if (!el) {
+            return null;
+        }
+
+        const topic =
+            el.querySelector(".u-topic");
+
+        const message =
+            el.querySelector(".u-msg");
+
+        if (!message) {
+            return null;
+        }
+
+        return {
+            el,
+
+            user: clean(
+                topic?.innerText ||
+                topic?.textContent ||
+                ""
+            ),
+
+            text: clean(
+                message?.innerText ||
+                message?.textContent ||
+                ""
+            )
+        };
+    }
+
+    // =========================================================
+    // 🔤 EXTRACT ARABIC WORDS
+    // =========================================================
+    function extractArabicWords(text) {
+        text = clean(text);
+
+        if (!text) {
+            return [];
+        }
+
+        // السؤال ليس جواباً
+        if (isQuestion(text)) {
+            return [];
+        }
+
+        const matches =
+            text.match(
+                /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]+/gu
+            );
+
+        if (!matches) {
+            return [];
+        }
+
+        const words = [];
+
+        for (const word of matches) {
+            if (!word) {
+                continue;
+            }
+
+            const chars = [...word];
+
+            if (!chars.length) {
+                continue;
+            }
+
+            words.push(word);
+        }
+
+        const totalLetters =
+            words.reduce(
+                (total, word) =>
+                    total + [...word].length,
+                0
+            );
+
+        if (totalLetters < 2) {
+            return [];
+        }
+
+        if (totalLetters > 500) {
+            return [];
+        }
+
+        return words;
+    }
+
+    // =========================================================
+    // 🧩 MAKE ANSWER
+    // =========================================================
+    function makeAnswer(words) {
+        return words
+            .map(word =>
+                [...word].join(" ")
+            )
+            .join("   ");
+    }
+
+    // =========================================================
+    // ✏️ SET INPUT
+    // =========================================================
+    function setInput(value) {
+        const setter =
+            Object.getOwnPropertyDescriptor(
+                HTMLTextAreaElement.prototype,
+                "value"
+            )?.set;
+
+        if (!setter) {
+            console.error(
+                "❌ textarea setter not found"
+            );
+
+            return false;
+        }
+
+        setter.call(
+            input,
+            value
+        );
+
+        input.dispatchEvent(
+            new Event(
+                "input",
+                {
+                    bubbles: true
+                }
+            )
+        );
+
+        input.dispatchEvent(
+            new Event(
+                "change",
+                {
+                    bubbles: true
+                }
+            )
+        );
+
+        return true;
+    }
+
+    // =========================================================
+    // 📤 SEND
+    // =========================================================
+    function sendAnswer(answer) {
+        if (!enabled) {
+            return false;
+        }
+
+        if (state !== "SENDING") {
+            return false;
+        }
+
+        const events =
+            window.jQuery?._data?.(
+                input,
+                "events"
+            );
+
+        const handler =
+            events?.keyup?.find(
+                h => h.guid === 7
+            )?.handler;
+
+        if (
+            typeof handler !==
+            "function"
+        ) {
+            console.error(
+                "❌ Send handler #7 not found"
+            );
+
+            return false;
+        }
+
+        if (!setInput(answer)) {
+            return false;
+        }
+
+        const e =
+            window.jQuery.Event(
+                "keyup"
+            );
+
+        e.key = "Enter";
+        e.code = "Enter";
+        e.keyCode = 13;
+        e.which = 13;
+
+        e.target = input;
+        e.currentTarget = input;
+
+        handler.call(
+            input,
+            e
+        );
+
+        return true;
+    }
+
+    // =========================================================
+    // 🔎 FIND CHAT CONTAINER
+    // =========================================================
+    function findChatContainer() {
+        const first =
+            document.querySelector(".uzr");
+
+        if (!first) {
+            return document.body;
+        }
+
+        let parent =
+            first.parentElement;
+
+        while (
+            parent &&
+            parent !== document.body
+        ) {
+            const count =
+                parent.querySelectorAll(
+                    ".uzr"
+                ).length;
+
+            if (count > 5) {
+                return parent;
+            }
+
+            parent =
+                parent.parentElement;
+        }
+
+        return (
+            first.parentElement ||
+            document.body
+        );
+    }
+
+    const chatContainer =
+        findChatContainer();
+
+    // =========================================================
+    // 🧠 MARK EXISTING
+    // =========================================================
+    function markExisting() {
+        const nodes =
+            chatContainer.querySelectorAll(
+                ".uzr"
+            );
+
+        for (const el of nodes) {
+            const info =
+                getInfo(el);
+
+            if (!info) {
+                continue;
+            }
+
+            knownNodes.set(
+                el,
+                {
+                    user: info.user,
+                    text: info.text
+                }
+            );
+        }
+    }
+
+    markExisting();
+
+    // =========================================================
+    // ❓ START ROUND
+    // =========================================================
+    function startRound(msg) {
+        if (!enabled) {
+            return;
+        }
+
+        if (state !== "READY") {
+            return;
+        }
+
+        const now = Date.now();
+
+        const questionKey =
+            normalizeQuestion(
+                msg.text
+            );
+
+        const lastTime =
+            recentQuestions.get(
+                questionKey
+            );
+
+        if (
+            lastTime &&
+            now - lastTime <
+                QUESTION_COOLDOWN
+        ) {
+            return;
+        }
+
+        recentQuestions.set(
+            questionKey,
+            now
+        );
+
+        for (
+            const [
+                key,
+                time
+            ] of recentQuestions
+        ) {
+            if (
+                now - time >
+                10000
+            ) {
+                recentQuestions.delete(
+                    key
+                );
+            }
+        }
+
+        /*
+         * كل الرسائل الموجودة حالياً
+         * قديمة بالنسبة للجولة الجديدة.
+         */
+        const existing =
+            new WeakSet(
+                [
+                    ...chatContainer
+                        .querySelectorAll(
+                            ".uzr"
+                        )
+                ]
+            );
+
+        currentRound = {
+            owner: msg.user,
+            question: msg.text,
+            started: now,
+            sent: false,
+            existing
+        };
+
+        state =
+            "WAITING_WORD";
+
+        clearTimeout(timer);
+
+        timer =
+            setTimeout(
+                () => {
+                    if (
+                        state ===
+                        "WAITING_WORD"
+                    ) {
+                        console.log(
+                            "⌛ ROUND TIMEOUT"
+                        );
+
+                        currentRound =
+                            null;
+
+                        state =
+                            "READY";
+                    }
+                },
+                ROUND_TIMEOUT
+            );
+
+        console.log(
+            "%c🧩 QUESTION DETECTED",
+            "color:#a855f7;font-weight:bold"
+        );
+
+        console.log(
+            "👤 OWNER:",
+            msg.user
+        );
+
+        console.log(
+            "❓ ORIGINAL:",
+            msg.text
+        );
+
+        console.log(
+            "🧹 NORMALIZED:",
+            normalizeQuestion(
+                msg.text
+            )
+        );
+
+        console.log(
+            "🔄 COLLAPSED:",
+            collapseRepeatedArabic(
+                normalizeQuestion(
+                    msg.text
+                )
+            )
+        );
+    }
+
+    // =========================================================
+    // 📝 PROCESS NODE
+    // =========================================================
+    function processNode(el) {
+        if (!enabled) {
+            return;
+        }
+
+        if (!el) {
+            return;
+        }
+
+        const msg =
+            getInfo(el);
+
+        if (!msg) {
+            return;
+        }
+
+        if (
+            !msg.user &&
+            !msg.text
+        ) {
+            return;
+        }
+
+        const old =
+            knownNodes.get(el);
+
+        const changed =
+            !old ||
+            old.user !== msg.user ||
+            old.text !== msg.text;
+
+        if (!changed) {
+            return;
+        }
+
+        knownNodes.set(
+            el,
+            {
+                user: msg.user,
+                text: msg.text
+            }
+        );
+
+        // =====================================================
+        // ❓ QUESTION
+        // =====================================================
+        if (
+            state === "READY" &&
+            isQuestion(msg.text)
+        ) {
+            startRound(msg);
+            return;
+        }
+
+        // =====================================================
+        // ⏳ WAIT FOR WORD
+        // =====================================================
+        if (
+            state !==
+            "WAITING_WORD"
+        ) {
+            return;
+        }
+
+        if (!currentRound) {
+            return;
+        }
+
+        // لازم نفس صاحب الجولة
+        if (
+            msg.user !==
+            currentRound.owner
+        ) {
+            return;
+        }
+
+        // الرسالة كانت موجودة قبل السؤال
+        if (
+            currentRound.existing.has(
+                el
+            )
+        ) {
+            if (
+                !old ||
+                old.text === msg.text
+            ) {
+                return;
+            }
+        }
+
+        const words =
+            extractArabicWords(
+                msg.text
+            );
+
+        if (
+            words.length === 0
+        ) {
+            return;
+        }
+
+        const answer =
+            makeAnswer(words);
+
+        // =====================================================
+        // 🛡️ LOCK
+        // =====================================================
+        state =
+            "SENDING";
+
+        currentRound.sent =
+            true;
+
+        clearTimeout(timer);
+
+        console.log(
+            "%c🎯 WORD:",
+            "color:#00aaff;font-weight:bold",
+            msg.text
+        );
+
+        console.log(
+            "%c📤 ANSWER:",
+            "color:#00ff88;font-weight:bold",
+            answer
+        );
+
+        const sent =
+            sendAnswer(answer);
+
+        if (!sent) {
+            console.error(
+                "❌ SEND FAILED"
+            );
+
+            currentRound =
+                null;
+
+            state =
+                "READY";
+
+            return;
+        }
+
+        console.log(
+            "%c✅ SENT ONCE",
+            "color:#00ff88;font-weight:bold",
+            answer
+        );
+
+        // الجولة التالية جاهزة فوراً
+        currentRound =
+            null;
+
+        state =
+            "READY";
+    }
+
+    // =========================================================
+    // ⚡ MUTATION HANDLER
+    // =========================================================
+    function handleMutation(mutation) {
+        if (!enabled) {
+            return;
+        }
+
+        if (
+            state ===
+            "SENDING"
+        ) {
+            return;
+        }
+
+        let target =
+            mutation.target;
+
+        if (
+            target &&
+            target.nodeType === 3
+        ) {
+            target =
+                target.parentElement;
+        }
+
+        const direct =
+            target?.closest?.(
+                ".uzr"
+            );
+
+        if (direct) {
+            processNode(
+                direct
+            );
+
+            return;
+        }
+
+        for (
+            const node
+            of mutation.addedNodes
+        ) {
+            if (
+                node.nodeType !== 1
+            ) {
+                continue;
+            }
+
+            if (
+                node.matches?.(
+                    ".uzr"
+                )
+            ) {
+                processNode(
+                    node
+                );
+
+                if (
+                    state ===
+                    "SENDING"
+                ) {
+                    return;
+                }
+            }
+
+            const children =
+                node.querySelectorAll?.(
+                    ".uzr"
+                );
+
+            if (!children) {
+                continue;
+            }
+
+            for (
+                const el
+                of children
+            ) {
+                processNode(
+                    el
+                );
+
+                if (
+                    state ===
+                    "SENDING"
+                ) {
+                    return;
+                }
+            }
+        }
+    }
+
+    // =========================================================
+    // 👀 OBSERVER
+    // =========================================================
+    observer =
+        new MutationObserver(
+            mutations => {
+
+                if (!enabled) {
+                    return;
+                }
+
+                for (
+                    const mutation
+                    of mutations
+                ) {
+                    handleMutation(
+                        mutation
+                    );
+
+                    if (
+                        state ===
+                        "SENDING"
+                    ) {
+                        break;
+                    }
+                }
+            }
+        );
+
+    observer.observe(
+        chatContainer,
+        {
+            childList: true,
+            subtree: true,
+            characterData: true
+        }
+    );
+
+    // =========================================================
+    // 🔘 BUTTON
+    // =========================================================
+    button.addEventListener(
+        "click",
+        () => {
+
+            enabled =
+                !enabled;
+
+            if (enabled) {
+
+                button.textContent =
+                    "⚡ ON";
+
+                button.style.background =
+                    "#16a34a";
+
+                currentRound =
+                    null;
+
+                state =
+                    "READY";
+
+                markExisting();
+
+                console.log(
+                    "🟢 AUTO BREAKER ON"
+                );
+
+            } else {
+
+                button.textContent =
+                    "⛔ OFF";
+
+                button.style.background =
+                    "#dc2626";
+
+                clearTimeout(timer);
+
+                currentRound =
+                    null;
+
+                state =
+                    "OFF";
+
+                console.log(
+                    "🔴 AUTO BREAKER OFF"
+                );
+            }
+        }
+    );
+
+    // =========================================================
+    // 🧰 API
+    // =========================================================
+    window.__chatBreaker = {
+
+        on() {
+            enabled = true;
+            currentRound = null;
+            state = "READY";
+
+            markExisting();
+
+            button.textContent =
+                "⚡ ON";
+
+            button.style.background =
+                "#16a34a";
+        },
+
+        off() {
+            enabled = false;
+
+            clearTimeout(timer);
+
+            currentRound = null;
+            state = "OFF";
+
+            button.textContent =
+                "⛔ OFF";
+
+            button.style.background =
+                "#dc2626";
+        },
+
+        status() {
+            return {
+                enabled,
+                state,
+
+                round:
+                    currentRound
+                        ? {
+                            owner:
+                                currentRound.owner,
+
+                            question:
+                                currentRound.question,
+
+                            sent:
+                                currentRound.sent
+                        }
+                        : null
+            };
+        },
+
+        stop() {
+            enabled = false;
+
+            clearTimeout(timer);
+
+            if (observer) {
+                observer.disconnect();
+            }
+
+            button.remove();
+
+            delete window.__chatBreaker;
+
+            console.log(
+                "🛑 Chat Breaker stopped"
+            );
+        }
+    };
+
+    // =========================================================
+    // 🚀 READY
+    // =========================================================
+    console.log(
+        "%c⚡ CHAT BREAKER — DISTORTED QUESTION FIX",
+        "color:#a855f7;font-size:17px;font-weight:bold"
+    );
+
+    console.log(
+        "🔥 يدعم السؤال المزخرف والممدد"
+    );
+
+    console.log(
+        "🔥 يدعم ف179 بأي مكان"
+    );
+
+    console.log(
+        "🔥 يدعم IMAGE بأي مكان"
+    );
+
+    console.log(
+        "🛡️ ONE ANSWER PER ROUND"
+    );
+
+    return "CHAT_BREAKER_DISTORTED_FIX";
+})(); 

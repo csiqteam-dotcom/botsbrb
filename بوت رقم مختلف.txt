@@ -1,0 +1,461 @@
+(() => {
+    // ==========================================
+    // إيقاف النسخة السابقة
+    // ==========================================
+
+    window.__differentNumber?.stop?.();
+
+    let enabled = true;
+    const processed = new WeakSet();
+
+    // ==========================================
+    // تحويل الأرقام العربية والفارسية
+    // ==========================================
+
+    function normalizeDigits(str) {
+        return str
+            .replace(/[٠-٩]/g, d =>
+                "٠١٢٣٤٥٦٧٨٩".indexOf(d)
+            )
+            .replace(/[۰-۹]/g, d =>
+                "۰۱۲۳۴۵۶۷۸۹".indexOf(d)
+            );
+    }
+
+    // ==========================================
+    // اكتشاف الرقم المختلف
+    // ==========================================
+
+    function findDifferentNumber(text) {
+
+        const clean = normalizeDigits(text).trim();
+
+        // لازم الرسالة تكون أرقام فقط
+        if (!/^\d+$/.test(clean)) {
+            return null;
+        }
+
+        // أقل طول للسلسلة
+        if (clean.length < 4) {
+            return null;
+        }
+
+        // ======================================
+        // حساب تكرار كل رقم
+        // ======================================
+
+        const counts = Object.create(null);
+
+        for (const digit of clean) {
+            counts[digit] =
+                (counts[digit] || 0) + 1;
+        }
+
+        const entries = Object.entries(counts);
+
+        if (entries.length < 2) {
+            return null;
+        }
+
+        // ======================================
+        // نبحث عن رقم ظهر مرة واحدة فقط
+        // ======================================
+
+        const once = entries.filter(
+            ([digit, count]) => count === 1
+        );
+
+        /*
+            لازم يكون هناك رقم واحد فقط
+            ظهر مرة واحدة.
+        */
+
+        if (once.length !== 1) {
+            return null;
+        }
+
+        const answer = once[0][0];
+
+        // ======================================
+        // لازم يكون أكو رقم آخر متكرر
+        // ======================================
+
+        const hasRepeatedNumber =
+            entries.some(
+                ([digit, count]) => count > 1
+            );
+
+        if (!hasRepeatedNumber) {
+            return null;
+        }
+
+        return answer;
+    }
+
+    // ==========================================
+    // إرسال الجواب
+    // ==========================================
+
+    function sendAnswer(answer) {
+
+        const input =
+            document.querySelector("#tbox");
+
+        if (!input) {
+            console.error(
+                "❌ لم يتم العثور على #tbox"
+            );
+            return;
+        }
+
+        input.focus();
+
+        // ======================================
+        // تغيير قيمة textarea
+        // ======================================
+
+        const setter =
+            Object.getOwnPropertyDescriptor(
+                HTMLTextAreaElement.prototype,
+                "value"
+            )?.set;
+
+        if (setter) {
+            setter.call(input, answer);
+        } else {
+            input.value = answer;
+        }
+
+        // ======================================
+        // إعلام الموقع بتغيير النص
+        // ======================================
+
+        input.dispatchEvent(
+            new Event("input", {
+                bubbles: true
+            })
+        );
+
+        input.dispatchEvent(
+            new Event("change", {
+                bubbles: true
+            })
+        );
+
+        // ======================================
+        // إرسال فوراً
+        // ======================================
+
+        input.dispatchEvent(
+            new KeyboardEvent("keydown", {
+                key: "Enter",
+                code: "Enter",
+                keyCode: 13,
+                which: 13,
+                bubbles: true,
+                cancelable: true
+            })
+        );
+
+        input.dispatchEvent(
+            new KeyboardEvent("keypress", {
+                key: "Enter",
+                code: "Enter",
+                keyCode: 13,
+                which: 13,
+                bubbles: true,
+                cancelable: true
+            })
+        );
+
+        input.dispatchEvent(
+            new KeyboardEvent("keyup", {
+                key: "Enter",
+                code: "Enter",
+                keyCode: 13,
+                which: 13,
+                bubbles: true,
+                cancelable: true
+            })
+        );
+
+        console.log(
+            `%c⚡ SENT: ${answer}`,
+            "color:#00ff88;font-weight:bold"
+        );
+    }
+
+    // ==========================================
+    // معالجة رسالة جديدة
+    // ==========================================
+
+    function processMessage(row) {
+
+        if (!enabled) {
+            return;
+        }
+
+        if (!row) {
+            return;
+        }
+
+        // منع معالجة نفس الرسالة مرتين
+        if (processed.has(row)) {
+            return;
+        }
+
+        const msg =
+            row.querySelector(".u-msg");
+
+        if (!msg) {
+            return;
+        }
+
+        const text =
+            msg.textContent.trim();
+
+        // ======================================
+        // محاولة استخراج الجواب
+        // ======================================
+
+        const answer =
+            findDifferentNumber(text);
+
+        // ليست جولة صالحة
+        if (answer === null) {
+            return;
+        }
+
+        // نحفظ الرسالة حتى لا نكررها
+        processed.add(row);
+
+        const topic =
+            row.querySelector(".u-topic");
+
+        const username =
+            topic
+                ? topic.textContent.trim()
+                : "Unknown";
+
+        // ======================================
+        // Console Log
+        // ======================================
+
+        console.log(
+            "%c🎯 DIFFERENT NUMBER",
+            "color:#00aaff;font-size:15px;font-weight:bold"
+        );
+
+        console.log(
+            "👤 اللاعب:",
+            username
+        );
+
+        console.log(
+            "🔢 السلسلة:",
+            text
+        );
+
+        console.log(
+            "✅ الجواب:",
+            answer
+        );
+
+        // ======================================
+        // إرسال
+        // ======================================
+
+        sendAnswer(answer);
+    }
+
+    // ==========================================
+    // مراقبة الشات
+    // ==========================================
+
+    const observer =
+        new MutationObserver(mutations => {
+
+            for (const mutation of mutations) {
+
+                for (const node of mutation.addedNodes) {
+
+                    // لازم يكون Element
+                    if (node.nodeType !== 1) {
+                        continue;
+                    }
+
+                    // ==================================
+                    // إذا العنصر نفسه رسالة
+                    // ==================================
+
+                    if (
+                        node.matches?.(".uzr")
+                    ) {
+                        processMessage(node);
+                        continue;
+                    }
+
+                    // ==================================
+                    // إذا يحتوي رسائل
+                    // ==================================
+
+                    const rows =
+                        node.querySelectorAll?.(".uzr");
+
+                    if (rows) {
+
+                        for (const row of rows) {
+                            processMessage(row);
+                        }
+
+                    }
+                }
+            }
+        });
+
+    // ==========================================
+    // منطقة الشات
+    // ==========================================
+
+    const chat =
+        document.querySelector("#d2") ||
+        document.body;
+
+    observer.observe(chat, {
+        childList: true,
+        subtree: true
+    });
+
+    // ==========================================
+    // إزالة زر قديم
+    // ==========================================
+
+    document
+        .getElementById(
+            "differentNumberToggle"
+        )
+        ?.remove();
+
+    // ==========================================
+    // إنشاء زر ON / OFF
+    // ==========================================
+
+    const button =
+        document.createElement("button");
+
+    button.id =
+        "differentNumberToggle";
+
+    Object.assign(button.style, {
+        position: "fixed",
+        right: "20px",
+        bottom: "100px",
+        zIndex: "999999",
+        padding: "10px 16px",
+        border: "0",
+        borderRadius: "8px",
+        color: "#fff",
+        fontWeight: "bold",
+        cursor: "pointer",
+        boxShadow:
+            "0 4px 12px rgba(0,0,0,.3)",
+        fontSize: "13px"
+    });
+
+    // ==========================================
+    // تحديث شكل الزر
+    // ==========================================
+
+    function updateButton() {
+
+        button.textContent =
+            enabled
+                ? "⚡ Different Number: ON"
+                : "⚡ Different Number: OFF";
+
+        button.style.background =
+            enabled
+                ? "#198754"
+                : "#dc3545";
+    }
+
+    // ==========================================
+    // زر ON / OFF
+    // ==========================================
+
+    button.onclick = () => {
+
+        enabled = !enabled;
+
+        updateButton();
+
+        console.log(
+            enabled
+                ? "🟢 Different Number ON"
+                : "🔴 Different Number OFF"
+        );
+    };
+
+    updateButton();
+
+    document.body.appendChild(button);
+
+    // ==========================================
+    // التحكم من Console
+    // ==========================================
+
+    window.__differentNumber = {
+
+        stop() {
+
+            observer.disconnect();
+
+            button.remove();
+
+            console.log(
+                "🛑 Different Number stopped"
+            );
+        },
+
+        on() {
+
+            enabled = true;
+
+            updateButton();
+
+            console.log(
+                "🟢 Different Number ON"
+            );
+        },
+
+        off() {
+
+            enabled = false;
+
+            updateButton();
+
+            console.log(
+                "🔴 Different Number OFF"
+            );
+        }
+
+    };
+
+    // ==========================================
+    // رسالة بدء التشغيل
+    // ==========================================
+
+    console.log(
+        "%c⚡ DIFFERENT NUMBER FAST MODE",
+        "color:#00aaff;font-size:16px;font-weight:bold"
+    );
+
+    console.log(
+        "👥 يراقب جميع اللاعبين"
+    );
+
+    console.log(
+        "🎯 يبحث عن رقم ظهر مرة واحدة فقط"
+    );
+
+})();

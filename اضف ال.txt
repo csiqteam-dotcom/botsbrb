@@ -1,0 +1,1509 @@
+(() => {
+    "use strict";
+
+    /* =========================================================
+       🔤 AL-BOT v3
+
+       MODES:
+
+       سؤال + اضف ال
+       ↓
+       إضافة "ال"
+
+       سؤال + حذف ال
+       ↓
+       حذف "ال"
+
+       ثم ينتظر رسالة صاحب الجولة التالية.
+
+       ========================================================= */
+
+
+    /* =========================================================
+       STOP OLD INSTANCE
+       ========================================================= */
+
+    try {
+        window.__alBot?.stop?.();
+    } catch (_) {}
+
+
+    /* =========================================================
+       CONFIG
+       ========================================================= */
+
+    const SEND_DELAY = 150;
+
+    const DUPLICATE_WINDOW = 1200;
+
+
+    /* =========================================================
+       STATE
+       ========================================================= */
+
+    let observer = null;
+
+    let enabled = true;
+
+    let phase = "NONE";
+
+    let owner = "";
+
+    let mode = "";
+
+    let round = 0;
+
+    const duplicateTracker = new Map();
+
+
+    /* =========================================================
+       NORMALIZE
+       ========================================================= */
+
+    function normalize(text) {
+
+        return String(text || "")
+            .replace(/\[image\]/gi, "")
+            .replace(/ـ/g, "")
+            .replace(/[\u064B-\u065F\u0670]/g, "")
+            .replace(/[إأآٱ]/g, "ا")
+            .replace(/ؤ/g, "و")
+            .replace(/ئ/g, "ي")
+            .replace(/\s+/g, " ")
+            .trim()
+            .toLowerCase();
+    }
+
+
+    /* =========================================================
+       QUESTION NORMALIZE
+       ========================================================= */
+
+    function normalizeQuestion(text) {
+
+        return String(text || "")
+            .replace(/\[image\]/gi, "")
+            .replace(/ـ/g, "")
+            .replace(/[\u064B-\u065F\u0670]/g, "")
+            .replace(/[إأآٱ]/g, "ا")
+            .replace(/ؤ/g, "و")
+            .replace(/ئ/g, "ي")
+            .replace(/\s+/g, "")
+            .trim()
+            .toLowerCase()
+            .replace(/(.)\1+/g, "$1");
+    }
+
+
+    /* =========================================================
+       DETECT MODE
+       ========================================================= */
+
+    function detectMode(text) {
+
+        const n =
+            normalizeQuestion(text);
+
+
+        /*
+         * حذف ال
+         */
+
+        if (
+            n.includes("حذفال")
+        ) {
+
+            return "REMOVE_AL";
+        }
+
+
+        /*
+         * اضف ال
+         */
+
+        if (
+            n.includes("اضفال")
+        ) {
+
+            return "ADD_AL";
+        }
+
+
+        /*
+         * ف179 + حذف/اضف
+         */
+
+        if (
+            n.includes("ف179")
+        ) {
+
+            if (
+                n.includes("حذف")
+            ) {
+
+                return "REMOVE_AL";
+            }
+
+
+            if (
+                n.includes("اضف")
+            ) {
+
+                return "ADD_AL";
+            }
+        }
+
+
+        /*
+         * إذا مجرد سؤال بدون تحديد
+         *
+         * الافتراضي = إضافة ال
+         */
+
+        if (
+            n.includes("سوال")
+        ) {
+
+            return "ADD_AL";
+        }
+
+
+        return null;
+    }
+
+
+    /* =========================================================
+       QUESTION DETECTOR
+       ========================================================= */
+
+    function isQuestion(text) {
+
+        return !!detectMode(text);
+    }
+
+
+    /* =========================================================
+       MESSAGE DATA
+       ========================================================= */
+
+    function getMessageData(row) {
+
+        if (!row)
+            return null;
+
+
+        const user =
+            row.querySelector(
+                ".u-topic"
+            )
+            ?.textContent
+            ?.trim() || "";
+
+
+        const msg =
+            row.querySelector(
+                ".u-msg"
+            )
+            ?.textContent
+            ?.trim() || "";
+
+
+        const time =
+            row.querySelector(
+                ".tago, .minix.tago"
+            )
+            ?.textContent
+            ?.trim() || "";
+
+
+        if (!user || !msg)
+            return null;
+
+
+        return {
+            user,
+            msg,
+            time
+        };
+    }
+
+
+    /* =========================================================
+       FINGERPRINT
+       ========================================================= */
+
+    function fingerprint(data) {
+
+        return [
+            data.user,
+            data.msg,
+            data.time
+        ].join("|||");
+    }
+
+
+    /* =========================================================
+       DUPLICATE PROTECTION
+       ========================================================= */
+
+    function isDuplicate(data) {
+
+        const key =
+            fingerprint(data);
+
+
+        const now =
+            Date.now();
+
+
+        let item =
+            duplicateTracker.get(
+                key
+            );
+
+
+        if (!item) {
+
+            duplicateTracker.set(
+                key,
+                {
+                    count: 1,
+                    last: now
+                }
+            );
+
+            return false;
+        }
+
+
+        if (
+            now - item.last >
+            DUPLICATE_WINDOW
+        ) {
+
+            item.count = 1;
+            item.last = now;
+
+            return false;
+        }
+
+
+        item.count++;
+        item.last = now;
+
+
+        /*
+         * نسخة DOM الثانية
+         */
+
+        if (
+            item.count % 2 === 0
+        ) {
+
+            console.log(
+                "[AL-BOT] ♻️ DOM DUPLICATE IGNORED:",
+                data.msg
+            );
+
+            return true;
+        }
+
+
+        return false;
+    }
+
+
+    /* =========================================================
+       CLEAN DUPLICATES
+       ========================================================= */
+
+    function cleanupDuplicates() {
+
+        const now =
+            Date.now();
+
+
+        for (
+            const [key, item]
+            of duplicateTracker
+        ) {
+
+            if (
+                now - item.last >
+                DUPLICATE_WINDOW * 3
+            ) {
+
+                duplicateTracker.delete(
+                    key
+                );
+            }
+        }
+    }
+
+
+    /* =========================================================
+       CLEAN WORD
+       ========================================================= */
+
+    function cleanWord(word) {
+
+        let w =
+            String(word || "")
+                .trim();
+
+
+        if (!w)
+            return "";
+
+
+        /*
+         * نحافظ على علامات الترقيم
+         * الموجودة حول الكلمة
+         */
+
+        const leading =
+            w.match(
+                /^[^\p{L}\p{N}]+/u
+            )?.[0] || "";
+
+
+        const trailing =
+            w.match(
+                /[^\p{L}\p{N}]+$/u
+            )?.[0] || "";
+
+
+        const start =
+            leading.length;
+
+
+        const end =
+            trailing.length
+                ? -trailing.length
+                : undefined;
+
+
+        const core =
+            w
+                .slice(
+                    start,
+                    end
+                )
+                .trim();
+
+
+        if (!core)
+            return {
+                leading,
+                core: w,
+                trailing: ""
+            };
+
+
+        return {
+            leading,
+            core,
+            trailing
+        };
+    }
+
+
+    /* =========================================================
+       ADD AL
+       ========================================================= */
+
+    function addAl(word) {
+
+        const cleaned =
+            cleanWord(word);
+
+
+        if (
+            !cleaned ||
+            !cleaned.core
+        ) {
+
+            return word;
+        }
+
+
+        let core =
+            cleaned.core;
+
+
+        /*
+         * إذا أصلًا بيها ال
+         * لا نكررها.
+         */
+
+        if (
+            core.startsWith("ال")
+        ) {
+
+            return (
+                cleaned.leading +
+                core +
+                cleaned.trailing
+            );
+        }
+
+
+        /*
+         * إضافة ال
+         */
+
+        core =
+            "ال" + core;
+
+
+        return (
+            cleaned.leading +
+            core +
+            cleaned.trailing
+        );
+    }
+
+
+    /* =========================================================
+       REMOVE AL
+       ========================================================= */
+
+    function removeAl(word) {
+
+        const cleaned =
+            cleanWord(word);
+
+
+        if (
+            !cleaned ||
+            !cleaned.core
+        ) {
+
+            return word;
+        }
+
+
+        let core =
+            cleaned.core;
+
+
+        /*
+         * إذا الكلمة تبدأ بـ ال
+         * نحذفها.
+         */
+
+        if (
+            core.startsWith("ال")
+        ) {
+
+            core =
+                core.slice(2);
+        }
+
+
+        /*
+         * إذا ما بيها ال
+         * تبقى مثل ما هي.
+         */
+
+        return (
+            cleaned.leading +
+            core +
+            cleaned.trailing
+        );
+    }
+
+
+    /* =========================================================
+       BUILD ANSWER
+       ========================================================= */
+
+    function buildAnswer(
+        text,
+        currentMode
+    ) {
+
+        const original =
+            String(text || "")
+                .trim();
+
+
+        if (!original)
+            return null;
+
+
+        /*
+         * تقسيم الكلمات بالمسافات
+         */
+
+        const words =
+            original
+                .split(/\s+/)
+                .filter(Boolean);
+
+
+        if (!words.length)
+            return null;
+
+
+        let result;
+
+
+        /* =====================================================
+           ADD
+           ===================================================== */
+
+        if (
+            currentMode ===
+            "ADD_AL"
+        ) {
+
+            result =
+                words
+                    .map(addAl)
+                    .join(" ");
+        }
+
+
+        /* =====================================================
+           REMOVE
+           ===================================================== */
+
+        else if (
+            currentMode ===
+            "REMOVE_AL"
+        ) {
+
+            result =
+                words
+                    .map(removeAl)
+                    .join(" ");
+        }
+
+
+        else {
+
+            return null;
+        }
+
+
+        console.log(
+            "[AL-BOT] 📝 MODE:",
+            currentMode
+        );
+
+
+        console.log(
+            "[AL-BOT] 📝 INPUT:",
+            original
+        );
+
+
+        console.log(
+            "[AL-BOT] 📝 OUTPUT:",
+            result
+        );
+
+
+        return result;
+    }
+
+
+    /* =========================================================
+       SEND MESSAGE
+       ========================================================= */
+
+    function sendMessage(text) {
+
+        if (!enabled) {
+
+            console.log(
+                "[AL-BOT] 🔴 OFF - SEND BLOCKED"
+            );
+
+            return false;
+        }
+
+
+        const tbox =
+            document.querySelector(
+                "#tbox"
+            );
+
+
+        if (!tbox) {
+
+            console.error(
+                "[AL-BOT] ❌ #tbox NOT FOUND"
+            );
+
+            return false;
+        }
+
+
+        try {
+
+            const events =
+                window.jQuery?._data(
+                    tbox,
+                    "events"
+                );
+
+
+            const handler =
+                events?.keyup
+                    ?.find(
+                        h => h.guid === 7
+                    )
+                    ?.handler;
+
+
+            if (!handler) {
+
+                console.error(
+                    "[AL-BOT] ❌ SEND HANDLER NOT FOUND"
+                );
+
+                return false;
+            }
+
+
+            const setter =
+                Object.getOwnPropertyDescriptor(
+                    HTMLTextAreaElement.prototype,
+                    "value"
+                )?.set;
+
+
+            if (!setter) {
+
+                console.error(
+                    "[AL-BOT] ❌ TEXTAREA SETTER NOT FOUND"
+                );
+
+                return false;
+            }
+
+
+            setter.call(
+                tbox,
+                text
+            );
+
+
+            tbox.dispatchEvent(
+                new Event(
+                    "input",
+                    {
+                        bubbles: true
+                    }
+                )
+            );
+
+
+            const e =
+                window.jQuery.Event(
+                    "keyup"
+                );
+
+
+            e.key = "Enter";
+            e.code = "Enter";
+            e.keyCode = 13;
+            e.which = 13;
+
+            e.target = tbox;
+            e.currentTarget = tbox;
+
+
+            handler.call(
+                tbox,
+                e
+            );
+
+
+            return true;
+
+        } catch (err) {
+
+            console.error(
+                "[AL-BOT] ❌ SEND ERROR:",
+                err
+            );
+
+            return false;
+        }
+    }
+
+
+    /* =========================================================
+       START ROUND
+       ========================================================= */
+
+    function startRound(data) {
+
+        const detectedMode =
+            detectMode(
+                data.msg
+            );
+
+
+        if (!detectedMode)
+            return;
+
+
+        round++;
+
+
+        phase =
+            "WAITING";
+
+
+        owner =
+            data.user;
+
+
+        mode =
+            detectedMode;
+
+
+        console.log(
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        );
+
+
+        console.log(
+            `[AL-BOT] 🟣 NEW ROUND #${round}`
+        );
+
+
+        console.log(
+            "[AL-BOT] 👤 OWNER:",
+            owner
+        );
+
+
+        console.log(
+            "[AL-BOT] ❓ QUESTION:",
+            data.msg
+        );
+
+
+        console.log(
+            "[AL-BOT] ⚙️ MODE:",
+            mode === "ADD_AL"
+                ? "إضافة ال"
+                : "حذف ال"
+        );
+
+
+        console.log(
+            "[AL-BOT] ⏳ WAITING FOR NEXT OWNER MESSAGE..."
+        );
+
+
+        console.log(
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        );
+    }
+
+
+    /* =========================================================
+       PROCESS MESSAGE
+       ========================================================= */
+
+    function processMessage(row) {
+
+        if (!enabled)
+            return;
+
+
+        const data =
+            getMessageData(row);
+
+
+        if (!data)
+            return;
+
+
+        /*
+         * Duplicate
+         */
+
+        if (
+            isDuplicate(data)
+        ) {
+
+            return;
+        }
+
+
+        console.log(
+            "[AL-BOT] 📥 MESSAGE:",
+            data.user,
+            "→",
+            data.msg
+        );
+
+
+        /* =====================================================
+           QUESTION
+           ===================================================== */
+
+        if (
+            isQuestion(
+                data.msg
+            )
+        ) {
+
+            startRound(
+                data
+            );
+
+            return;
+        }
+
+
+        /* =====================================================
+           NO ROUND
+           ===================================================== */
+
+        if (
+            phase !==
+            "WAITING"
+        ) {
+
+            console.log(
+                "[AL-BOT] ⏭️ NO ACTIVE ROUND"
+            );
+
+            return;
+        }
+
+
+        /* =====================================================
+           OTHER USER
+           ===================================================== */
+
+        if (
+            data.user !==
+            owner
+        ) {
+
+            console.log(
+                "[AL-BOT] ⛔ OTHER USER IGNORED:",
+                data.user
+            );
+
+            return;
+        }
+
+
+        /* =====================================================
+           OWNER ANSWER
+           ===================================================== */
+
+        console.log(
+            "[AL-BOT] 👤 OWNER INPUT:",
+            data.msg
+        );
+
+
+        const answer =
+            buildAnswer(
+                data.msg,
+                mode
+            );
+
+
+        if (!answer) {
+
+            console.log(
+                "[AL-BOT] ❌ EMPTY ANSWER"
+            );
+
+            return;
+        }
+
+
+        /*
+         * Lock immediately
+         */
+
+        phase =
+            "ANSWERED";
+
+
+        console.log(
+            `[AL-BOT] ⏱️ WAITING ${SEND_DELAY}ms BEFORE SEND...`
+        );
+
+
+        setTimeout(
+            () => {
+
+                if (!enabled) {
+
+                    console.log(
+                        "[AL-BOT] 🔴 OFF - SEND CANCELLED"
+                    );
+
+                    return;
+                }
+
+
+                const sent =
+                    sendMessage(
+                        answer
+                    );
+
+
+                if (sent) {
+
+                    console.log(
+                        "[AL-BOT] ✅ ANSWER SENT:",
+                        answer
+                    );
+
+                } else {
+
+                    console.log(
+                        "[AL-BOT] ❌ SEND FAILED"
+                    );
+                }
+
+            },
+            SEND_DELAY
+        );
+    }
+
+
+    /* =========================================================
+       ADDED NODE
+       ========================================================= */
+
+    function processAddedNode(node) {
+
+        if (!node)
+            return;
+
+
+        if (
+            node.nodeType !==
+            Node.ELEMENT_NODE
+        ) {
+
+            return;
+        }
+
+
+        if (
+            node.matches?.(
+                ".uzr"
+            )
+        ) {
+
+            processMessage(
+                node
+            );
+        }
+
+
+        const rows =
+            node.querySelectorAll?.(
+                ".uzr"
+            );
+
+
+        if (
+            rows?.length
+        ) {
+
+            rows.forEach(
+                processMessage
+            );
+        }
+    }
+
+
+    /* =========================================================
+       CHAT
+       ========================================================= */
+
+    const d2 =
+        document.querySelector(
+            "#d2"
+        );
+
+
+    if (!d2) {
+
+        console.error(
+            "[AL-BOT] ❌ #d2 NOT FOUND"
+        );
+
+        return;
+    }
+
+
+    /* =========================================================
+       OBSERVER
+       ========================================================= */
+
+    observer =
+        new MutationObserver(
+            mutations => {
+
+                if (!enabled)
+                    return;
+
+
+                for (
+                    const mutation
+                    of mutations
+                ) {
+
+                    if (
+                        mutation.type !==
+                        "childList"
+                    ) {
+
+                        continue;
+                    }
+
+
+                    for (
+                        const node
+                        of mutation.addedNodes
+                    ) {
+
+                        processAddedNode(
+                            node
+                        );
+                    }
+                }
+
+
+                cleanupDuplicates();
+            }
+        );
+
+
+    observer.observe(
+        d2,
+        {
+            childList: true,
+            subtree: true
+        }
+    );
+
+
+    /* =========================================================
+       BUTTON
+       ========================================================= */
+
+    document
+        .getElementById(
+            "__alBotControl"
+        )
+        ?.remove();
+
+
+    const button =
+        document.createElement(
+            "button"
+        );
+
+
+    button.id =
+        "__alBotControl";
+
+
+    button.type =
+        "button";
+
+
+    button.style.cssText = `
+        position: fixed;
+        right: 20px;
+        bottom: 72px;
+        z-index: 2147483647;
+
+        border: none;
+        outline: none;
+
+        padding: 10px 16px;
+
+        border-radius: 12px;
+
+        font-family: Arial, sans-serif;
+        font-size: 14px;
+        font-weight: 700;
+
+        cursor: pointer;
+
+        color: #fff;
+
+        box-shadow:
+            0 5px 20px rgba(0,0,0,.35);
+
+        transition:
+            transform .12s ease,
+            opacity .12s ease;
+    `;
+
+
+    /* =========================================================
+       BUTTON UPDATE
+       ========================================================= */
+
+    function updateButton() {
+
+        if (enabled) {
+
+            button.textContent =
+                "🔤 AL  🟢 ON";
+
+            button.style.background =
+                "#176b3a";
+
+        } else {
+
+            button.textContent =
+                "🔤 AL  🔴 OFF";
+
+            button.style.background =
+                "#9b2525";
+        }
+    }
+
+
+    /* =========================================================
+       BUTTON CLICK
+       ========================================================= */
+
+    button.addEventListener(
+        "click",
+        () => {
+
+            enabled =
+                !enabled;
+
+
+            /*
+             * OFF:
+             * إلغاء الجولة الحالية
+             */
+
+            if (!enabled) {
+
+                phase =
+                    "NONE";
+
+                owner =
+                    "";
+
+                mode =
+                    "";
+
+
+                console.log(
+                    "[AL-BOT] 🔴 OFF"
+                );
+
+            } else {
+
+                phase =
+                    "NONE";
+
+                owner =
+                    "";
+
+                mode =
+                    "";
+
+
+                console.log(
+                    "[AL-BOT] 🟢 ON"
+                );
+            }
+
+
+            updateButton();
+        }
+    );
+
+
+    button.addEventListener(
+        "mouseenter",
+        () => {
+
+            button.style.transform =
+                "scale(1.05)";
+        }
+    );
+
+
+    button.addEventListener(
+        "mouseleave",
+        () => {
+
+            button.style.transform =
+                "scale(1)";
+        }
+    );
+
+
+    document.body.appendChild(
+        button
+    );
+
+
+    updateButton();
+
+
+    /* =========================================================
+       STOP
+       ========================================================= */
+
+    function stop() {
+
+        try {
+            observer?.disconnect();
+        } catch (_) {}
+
+
+        observer = null;
+
+        enabled = false;
+
+        phase = "NONE";
+
+        owner = "";
+
+        mode = "";
+
+        duplicateTracker.clear();
+
+        button.remove();
+
+
+        console.log(
+            "[AL-BOT] 🛑 STOPPED"
+        );
+    }
+
+
+    /* =========================================================
+       ON
+       ========================================================= */
+
+    function on() {
+
+        enabled = true;
+
+        phase = "NONE";
+
+        owner = "";
+
+        mode = "";
+
+        updateButton();
+
+
+        console.log(
+            "[AL-BOT] 🟢 ON"
+        );
+    }
+
+
+    /* =========================================================
+       OFF
+       ========================================================= */
+
+    function off() {
+
+        enabled = false;
+
+        phase = "NONE";
+
+        owner = "";
+
+        mode = "";
+
+        updateButton();
+
+
+        console.log(
+            "[AL-BOT] 🔴 OFF"
+        );
+    }
+
+
+    /* =========================================================
+       RESET
+       ========================================================= */
+
+    function reset() {
+
+        phase = "NONE";
+
+        owner = "";
+
+        mode = "";
+
+        duplicateTracker.clear();
+
+
+        console.log(
+            "[AL-BOT] 🔄 RESET"
+        );
+    }
+
+
+    /* =========================================================
+       STATUS
+       ========================================================= */
+
+    function status() {
+
+        console.log(
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        );
+
+
+        console.log(
+            "🔤 AL-BOT v3 STATUS"
+        );
+
+
+        console.log(
+            "Enabled:",
+            enabled
+        );
+
+
+        console.log(
+            "Phase:",
+            phase
+        );
+
+
+        console.log(
+            "Round:",
+            round
+        );
+
+
+        console.log(
+            "Owner:",
+            owner || "(none)"
+        );
+
+
+        console.log(
+            "Mode:",
+            mode === "ADD_AL"
+                ? "إضافة ال"
+                : mode === "REMOVE_AL"
+                    ? "حذف ال"
+                    : "(none)"
+        );
+
+
+        console.log(
+            "Send delay:",
+            SEND_DELAY + "ms"
+        );
+
+
+        console.log(
+            "Observer:",
+            observer
+                ? "RUNNING"
+                : "STOPPED"
+        );
+
+
+        console.log(
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        );
+    }
+
+
+    /* =========================================================
+       GLOBAL API
+       ========================================================= */
+
+    window.__alBot = {
+
+        on,
+
+        off,
+
+        stop,
+
+        reset,
+
+        status,
+
+        normalize,
+
+        isQuestion,
+
+        detectMode,
+
+        addAl,
+
+        removeAl,
+
+        buildAnswer,
+
+        getState: () => ({
+            enabled,
+            phase,
+            owner,
+            mode,
+            round
+        })
+    };
+
+
+    /* =========================================================
+       READY
+       ========================================================= */
+
+    console.log(
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    );
+
+    console.log(
+        "🔤 AL-BOT v3 READY"
+    );
+
+    console.log(
+        "➕ ADD: اضف ال"
+    );
+
+    console.log(
+        "➖ REMOVE: حذف ال"
+    );
+
+    console.log(
+        "🧠 Next owner message = answer"
+    );
+
+    console.log(
+        "⏱️ Send delay:",
+        SEND_DELAY + "ms"
+    );
+
+    console.log(
+        "🎛️ Visible ON/OFF button: ON"
+    );
+
+    console.log(
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    );
+
+})();
